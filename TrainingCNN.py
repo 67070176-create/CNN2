@@ -124,7 +124,7 @@ print(f"Total: {len(raw_base_dataset)} | Train: {len(train_dataset)} | Test: {le
 weights = models.ResNet18_Weights.DEFAULT
 model = models.resnet18(weights=weights)
 
-# 1. Freeze ALL pre-trained weights
+#Freeze ALL pre-trained weights
 for param in model.parameters():
     param.requires_grad = False
 
@@ -146,7 +146,7 @@ scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
 # --------------------------------------------------------------------------------------------
 
 print(f"Starting training on {device}...")
-last_acc = 0.0
+last_val_acc = 0.0
 
 for epoch in range(EPOCHS):
     # Set dynamic transform based on previous VALIDATION accuracy
