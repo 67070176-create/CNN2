@@ -17,14 +17,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # --------------------------------------------------------------------------------------------
 # 1. Transforms
 # --------------------------------------------------------------------------------------------
-ensure_rgb = transforms.Lambda(lambda img: img.convert('RGB'))
 
 def get_dynamic_transform(current_acc):
     """Dynamically scales augmentation intensity based on training accuracy."""
     if current_acc < 60.0:
         # Easy: Light affine only
         return transforms.Compose([
-            ensure_rgb,
             transforms.Resize((224, 224)),
             transforms.RandomAffine(degrees=5, translate=(0.02, 0.02)),
             transforms.ToTensor(),
@@ -33,7 +31,6 @@ def get_dynamic_transform(current_acc):
     elif current_acc < 85.0:
         # Medium: Rotation + moderate scaling
         return transforms.Compose([
-            ensure_rgb,
             transforms.Resize((224, 224)),
             transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
             transforms.ColorJitter(brightness=0.1, contrast=0.1),
@@ -43,7 +40,6 @@ def get_dynamic_transform(current_acc):
     else:
         # Hard: Stronger affine + perspective warp
         return transforms.Compose([
-            ensure_rgb,
             transforms.Resize((224, 224)),
             transforms.RandomAffine(degrees=15, translate=(0.08, 0.08), scale=(0.90, 1.10)),
             transforms.ColorJitter(brightness=0.2, contrast=0.2),
@@ -53,7 +49,6 @@ def get_dynamic_transform(current_acc):
         ])
 
 test_transform = transforms.Compose([
-    ensure_rgb,
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -84,6 +79,7 @@ class TransformedSubset(Dataset):
 
     def __getitem__(self, index):
         x, y = self.subset[index]
+        x = x.convert('RGB')
         if self.transform:
             x = self.transform(x)
         return x, y
@@ -108,7 +104,7 @@ test_dataset = TransformedSubset(raw_test_subset, transform=test_transform)
 # Class Balancing (Uncomment if classes are imbalanced) Using weight
 # --------------------------------------------------------------------------------------------
 targets = [raw_base_dataset.samples[i][1] for i in raw_train_subset.indices]
-class_counts = np.bincount(targets)
+class_counts = np.bincount(targets, minlength=NUM_CLASSES)
 class_weights = 1.0 / (class_counts + 1e-6)
 sample_weights = [class_weights[t] for t in targets]
 sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
@@ -153,7 +149,9 @@ print(f"Starting training on {device}...")
 last_acc = 0.0
 
 for epoch in range(EPOCHS):
-    train_dataset.transform = get_dynamic_transform(last_acc)
+    # Set dynamic transform based on previous VALIDATION accuracy
+    train_dataset.transform = get_dynamic_transform(last_val_acc)
+    
     model.train()
     running_loss = 0.0
     correct = 0
@@ -162,27 +160,44 @@ for epoch in range(EPOCHS):
     pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}", mininterval=20.0)
     for i, (images, labels) in enumerate(pbar):
         images, labels = images.to(device), labels.to(device)
-        
+
         optimizer.zero_grad()
         outputs = model(images)
         loss = criterion(outputs, labels)
-        
+
         loss.backward()
         optimizer.step()
-        
+
         running_loss += loss.item() * images.size(0)
         _, predicted = outputs.max(1)
         total += labels.size(0)
         correct += predicted.eq(labels).sum().item()
-        
+
         if i % 50 == 0:
             pbar.set_postfix({'loss': f"{loss.item():.4f}"})
+
     scheduler.step()
     epoch_loss = running_loss / total
     epoch_acc = (correct / total) * 100
-    last_acc = epoch_acc
     
-    print(f"Epoch {epoch+1} Results -> Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.2f}%")
+    # ----------------------------------------------------------------------------------------
+    # Intermediate Validation Step (Prevents Training Accuracy Leakage)
+    # ----------------------------------------------------------------------------------------
+    if (epoch + 1) % 3 == 0 or epoch == 0:
+        model.eval()
+        val_correct = 0
+        val_total = 0
+        with torch.no_grad():
+            for val_images, val_labels in test_loader:
+                val_images, val_labels = val_images.to(device), val_labels.to(device)
+                val_outputs = model(val_images)
+                _, val_pred = val_outputs.max(1)
+                val_total += val_labels.size(0)
+                val_correct += val_pred.eq(val_labels).sum().item()
+                
+        last_val_acc = (val_correct / val_total) * 100
+
+    print(f"Epoch {epoch+1} Results -> Train Acc: {epoch_acc:.2f}% | Val Acc: {last_val_acc:.2f}%")
 
 # --------------------------------------------------------------------------------------------
 # 7. Evaluation & Model Saving
@@ -203,5 +218,10 @@ with torch.no_grad():
 test_acc = (test_correct / test_total) * 100
 print(f"Final Test Accuracy: {test_acc:.2f}%")
 
-torch.save(model.state_dict(), 'model.pt')
+checkpoint = {
+    'model_state': model.state_dict(),
+    'class_to_idx': raw_base_dataset.class_to_idx
+}
+
+torch.save(checkpoint, 'model.pt')
 print("Model saved successfully as model.pt!")

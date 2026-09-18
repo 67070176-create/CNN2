@@ -34,13 +34,14 @@ class_names = test_dataset.classes
 weights = models.ResNet18_Weights.DEFAULT
 model = models.resnet18(weights=weights)
 num_ftrs = model.fc.in_features
-model.fc = nn.Sequential(
+model.fc = nn.Sequential( # type: ignore
     nn.Dropout(p=0.3),
     nn.Linear(num_ftrs, NUM_CLASSES)
 )
 
 # Load saved weights from training
-model.load_state_dict(torch.load('model.pt', map_location=device))
+checkpoint = torch.load('model.pt', map_location=device, weights_only=True)
+model.load_state_dict(checkpoint['model_state'])
 model = model.to(device)
 model.eval()
 
