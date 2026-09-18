@@ -128,10 +128,14 @@ print(f"Total: {len(raw_base_dataset)} | Train: {len(train_dataset)} | Test: {le
 weights = models.ResNet18_Weights.DEFAULT
 model = models.resnet18(weights=weights)
 
+# 1. Freeze ALL pre-trained weights
+for param in model.parameters():
+    param.requires_grad = False
+
 #Add Drop-out 30% to the model
 num_ftrs = model.fc.in_features
 model.fc = nn.Sequential(  # type: ignore
-    nn.Dropout(p=0.3),
+    nn.Dropout(p=0.5),
     nn.Linear(num_ftrs, NUM_CLASSES)
 )
 model = model.to(device)
@@ -139,7 +143,7 @@ model = model.to(device)
 criterion = nn.CrossEntropyLoss()
 # Reduced learning rate to 1e-4 for transfer learning
 EPOCHS = 15
-optimizer = Adam(model.parameters(), lr=0.0003)
+optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.0001, weight_decay=1e-4)
 scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
 # --------------------------------------------------------------------------------------------
 # 6. Training Loop
