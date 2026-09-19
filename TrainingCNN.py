@@ -18,35 +18,13 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # 1. Transforms
 # --------------------------------------------------------------------------------------------
 
-def get_dynamic_transform(current_acc):
-    """Dynamically scales augmentation intensity based on training accuracy."""
-    if current_acc < 60.0:
-        # Easy: Light affine only
-        return transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.RandomAffine(degrees=5, translate=(0.02, 0.02)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-    elif current_acc < 85.0:
-        # Medium: Rotation + moderate scaling
-        return transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05)),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-    else:
-        # Hard: Stronger affine + perspective warp
-        return transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.RandomAffine(degrees=15, translate=(0.08, 0.08), scale=(0.90, 1.10)),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2),
-            transforms.RandomPerspective(distortion_scale=0.15, p=0.4),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+train_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomAffine(degrees=(-10, 10), translate=(0.05, 0.05), scale=(0.95, 1.05)),
+    transforms.ColorJitter(brightness=0.1, contrast=0.1),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
 
 test_transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -97,7 +75,7 @@ test_size = len(raw_base_dataset) - train_size
 raw_train_subset, raw_test_subset = random_split(raw_base_dataset, [train_size, test_size], generator=generator)
 
 # Wrap each subset with its dedicated transform
-train_dataset = TransformedSubset(raw_train_subset, transform=get_dynamic_transform(0.0))
+train_dataset = TransformedSubset(raw_train_subset, transform=train_transform)
 test_dataset = TransformedSubset(raw_test_subset, transform=test_transform)
 
 # --------------------------------------------------------------------------------------------
@@ -124,14 +102,14 @@ print(f"Total: {len(raw_base_dataset)} | Train: {len(train_dataset)} | Test: {le
 weights = models.ResNet18_Weights.DEFAULT
 model = models.resnet18(weights=weights)
 
-#Freeze ALL pre-trained weights
+# FIXED: Unfreeze weights so model can fine-tune properly on 72 classes
 for param in model.parameters():
-    param.requires_grad = False
+    param.requires_grad = True
 
 #Add Drop-out 30% to the model
 num_ftrs = model.fc.in_features
 model.fc = nn.Sequential(  # type: ignore
-    nn.Dropout(p=0.5),
+    nn.Dropout(p=0.3),
     nn.Linear(num_ftrs, NUM_CLASSES)
 )
 model = model.to(device)
@@ -139,27 +117,50 @@ model = model.to(device)
 criterion = nn.CrossEntropyLoss()
 # Reduced learning rate to 1e-4 for transfer learning
 EPOCHS = 15
-optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.0001, weight_decay=1e-4)
+optimizer = Adam(model.parameters(), lr=0.0003, weight_decay=1e-4)
 scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
 # --------------------------------------------------------------------------------------------
-# 6. Training Loop
+# Early Stopping Helper Class
 # --------------------------------------------------------------------------------------------
+import copy
+class EarlyStopping:
+    def __init__(self, patience=4, min_delta=0.001):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = float('inf')
+        self.early_stop = False
+        self.best_model_wts = None
+
+    def __call__(self, val_loss, model):
+        if val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+            self.best_model_wts = copy.deepcopy(model.state_dict())
+        else:
+            self.counter += 1
+            print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+# --------------------------------------------------------------------------------------------
+# 6. Training & Validation Loop (Optimized for Speed)
+# --------------------------------------------------------------------------------------------
+early_stopping = EarlyStopping(patience=4, min_delta=0.001)
 
 print(f"Starting training on {device}...")
-last_val_acc = 0.0
 
 for epoch in range(EPOCHS):
-    # Set dynamic transform based on previous VALIDATION accuracy
-    train_dataset.transform = get_dynamic_transform(last_val_acc)
-    
+    # Training Phase
     model.train()
-    running_loss = 0.0
-    correct = 0
+    running_loss = torch.tensor(0.0, device=device)
+    correct = torch.tensor(0, device=device)
     total = 0
-    
-    pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}", mininterval=20.0)
-    for i, (images, labels) in enumerate(pbar):
-        images, labels = images.to(device), labels.to(device)
+
+    # mininterval=2.0 updates the terminal at most every 2 seconds
+    pbar = tqdm(train_loader, desc=f"Epoch {epoch+1:02d}/{EPOCHS}", mininterval=20.0)
+    #Batch
+    for images, labels in pbar:
+        images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
 
         optimizer.zero_grad()
         outputs = model(images)
@@ -168,43 +169,54 @@ for epoch in range(EPOCHS):
         loss.backward()
         optimizer.step()
 
-        running_loss += loss.item() * images.size(0)
+        # Keep additions on GPU to prevent CPU-GPU synchronization bottlenecks
+        batch_size = labels.size(0)
+        running_loss += loss.detach() * batch_size
         _, predicted = outputs.max(1)
-        total += labels.size(0)
-        correct += predicted.eq(labels).sum().item()
-
-        if i % 50 == 0:
-            pbar.set_postfix({'loss': f"{loss.item():.4f}"})
-
+        total += batch_size
+        correct += predicted.eq(labels).sum()
+    #Out Batch
     scheduler.step()
-    epoch_loss = running_loss / total
-    epoch_acc = (correct / total) * 100
     
-    # ----------------------------------------------------------------------------------------
-    # Intermediate Validation Step (Prevents Training Accuracy Leakage)
-    # ----------------------------------------------------------------------------------------
-    if (epoch + 1) % 3 == 0 or epoch == 0:
-        model.eval()
-        val_correct = 0
-        val_total = 0
-        with torch.no_grad():
-            for val_images, val_labels in test_loader:
-                val_images, val_labels = val_images.to(device), val_labels.to(device)
-                val_outputs = model(val_images)
-                _, val_pred = val_outputs.max(1)
-                val_total += val_labels.size(0)
-                val_correct += val_pred.eq(val_labels).sum().item()
-                
-        last_val_acc = (val_correct / val_total) * 100
+    # Move totals to CPU only once per epoch for accuracy calculation(need to update calc./display anyway)
+    train_acc = (correct.item() / total) * 100
+    epoch_loss = (running_loss.item() / total)
 
-    print(f"Epoch {epoch+1} Results -> Train Acc: {epoch_acc:.2f}% | Val Acc: {last_val_acc:.2f}%")
+    # Validation Phase
+    model.eval()
+    val_loss_running = torch.tensor(0.0, device=device)
+    val_correct = torch.tensor(0, device=device)
+    val_total = 0
+    with torch.no_grad():
+        for val_images, val_labels in test_loader:
+            val_images, val_labels = val_images.to(device, non_blocking=True), val_labels.to(device, non_blocking=True)
+            val_outputs = model(val_images)
+            
+            # Compute Validation Loss
+            v_loss = criterion(val_outputs, val_labels)
+            val_loss_running += v_loss.detach() * val_labels.size(0)
+            
+            _, val_pred = val_outputs.max(1)
+            val_total += val_labels.size(0)
+            val_correct += val_pred.eq(val_labels).sum()
 
+    val_acc = (val_correct.item() / val_total) * 100
+    val_loss = (val_loss_running.item() / val_total)
+    print(f"Epoch {epoch+1:02d}/{EPOCHS} -> Loss: {epoch_loss:.4f} | Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}%\n")
+
+    early_stopping(val_loss, model)
+    if early_stopping.early_stop:
+        assert early_stopping.best_model_wts is not None
+        print(f"\n[Early Stopping Triggered] Stopping early at epoch {epoch+1}.")
+        # Restore best performing model weights before saving
+        model.load_state_dict(early_stopping.best_model_wts)
+        break
 # --------------------------------------------------------------------------------------------
 # 7. Evaluation & Model Saving
 # --------------------------------------------------------------------------------------------
 print("\nEvaluating on Test Set...")
 model.eval()
-test_correct = 0
+test_correct = torch.tensor(0, device=device)
 test_total = 0
 
 with torch.no_grad():
@@ -213,9 +225,9 @@ with torch.no_grad():
         outputs = model(images)
         _, predicted = outputs.max(1)
         test_total += labels.size(0)
-        test_correct += predicted.eq(labels).sum().item()
+        test_correct += predicted.eq(labels).sum()
 
-test_acc = (test_correct / test_total) * 100
+test_acc = (test_correct.item() / test_total) * 100
 print(f"Final Test Accuracy: {test_acc:.2f}%")
 
 checkpoint = {

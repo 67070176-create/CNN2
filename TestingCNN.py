@@ -32,7 +32,7 @@ test_transform = transforms.Compose([
 ])
 
 # Load raw dataset without transforms
-raw_base_dataset = ImageFolder(root='dataset/round2')  # Ensure this points to your dataset path
+raw_base_dataset = ImageFolder(root='archive/synthetic_test_set')  # Ensure this points to your dataset path
 
 train_size = int(0.8 * len(raw_base_dataset))
 test_size = len(raw_base_dataset) - train_size
