@@ -1,4 +1,14 @@
 This Used Rasnet18 defualt weight
+
+resolution 244,244
+
+data augmentation
+- rotate +-10 
+- img shift
+- size/scale
+- light change(little)
+- normalize to standard of rasnet input
+
 hightlight i think is
 1. class balance by add weight each class
 2. doup_out 30%
