@@ -1,10 +1,11 @@
-#import pandas as pd
+# import pandas as pd
 import numpy as np
-from Net import Net
-#import matplotlib.pyplot as plt
+# from Net import Net
+# import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, random_split, WeightedRandomSampler, Dataset
-#from sklearn.metrics import accuracy_score
+# from sklearn.metrics import accuracy_score
 from tqdm import tqdm
+import copy
 
 import torch
 import torch.nn as nn
@@ -14,25 +15,26 @@ from torchvision.datasets import ImageFolder
 import torchvision.models as models
 
 from torch.optim.lr_scheduler import CosineAnnealingLR
+
 # --------------------------------------------------------------------------------------------
 # 1. Transforms
 # --------------------------------------------------------------------------------------------
-
 train_transform = transforms.Compose([
-    transforms.Resize((64, 64)),
+    transforms.Resize((128, 128)),
     transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
     transforms.RandomApply([
         transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.5))], 
-                           p=0.5),
+        p=0.5
+    ),
     transforms.ColorJitter(brightness=0.1, contrast=0.1),
     transforms.RandomGrayscale(p=0.5),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    transforms.RandomErasing(p=0.25, scale=(0.02, 0.2), value=0)
+    transforms.RandomErasing(p=0.25, scale=(0.02, 0.2), value=0) # type: ignore
 ])
 
 test_transform = transforms.Compose([
-    transforms.Resize((64, 64)),
+    transforms.Resize((128, 128)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -51,9 +53,8 @@ if torch.cuda.is_available():
 generator = torch.Generator().manual_seed(SEED)
 
 # --------------------------------------------------------------------------------------------
-# 3. Datasets & Split (Fixed: Separate transforms for train and test)
+# 3. Datasets & Split
 # --------------------------------------------------------------------------------------------
-# Load datasets separately so test set doesn't get augmentations
 class TransformedSubset(Dataset):
     """Wraps a Dataset subset to dynamically apply transformations."""
     def __init__(self, subset, transform=None):
@@ -84,7 +85,7 @@ train_dataset = TransformedSubset(raw_train_subset, transform=train_transform)
 test_dataset = TransformedSubset(raw_test_subset, transform=test_transform)
 
 # --------------------------------------------------------------------------------------------
-# Class Balancing (Uncomment if classes are imbalanced) Using weight
+# Class Balancing
 # --------------------------------------------------------------------------------------------
 targets = [raw_base_dataset.samples[i][1] for i in raw_train_subset.indices]
 class_counts = np.bincount(targets, minlength=NUM_CLASSES)
@@ -95,38 +96,39 @@ sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_w
 # --------------------------------------------------------------------------------------------
 # 4. DataLoaders
 # --------------------------------------------------------------------------------------------
-# If using sampler above, set sampler=sampler and replace shuffle=True with shuffle=False
 train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False, sampler=sampler) 
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False,)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
 print(f"Total: {len(raw_base_dataset)} | Train: {len(train_dataset)} | Test: {len(test_dataset)}")
 
 # --------------------------------------------------------------------------------------------
 # 5. Model Architecture
 # --------------------------------------------------------------------------------------------
-# weights = models.ResNet18_Weights.DEFAULT
-model = Net(num_classes=NUM_CLASSES).to(device)
+weights = models.EfficientNet_B0_Weights.DEFAULT
+model = models.efficientnet_b0(weights=weights)
 
-# FIXED: Unfreeze weights so model can fine-tune properly on 72 classes
+# Unfreeze weights so model can fine-tune properly
 for param in model.parameters():
     param.requires_grad = True
 
-#Add Drop-out 30% to the model
-# num_ftrs = model.fc.in_features
-# model.fc = nn.Sequential(  # type: ignore
-#     nn.Dropout(p=0.3),
-#     nn.Linear(num_ftrs, NUM_CLASSES)
-# )
+# Access classifier input features safely
+in_features = getattr(model.classifier[1], 'in_features', 1280)
+
+model.classifier = nn.Sequential(
+    nn.Dropout(p=0.3),
+    nn.Linear(in_features, NUM_CLASSES)
+)
 model = model.to(device)
-criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-# Reduced learning rate to 1e-4 for transfer learning
+
+criterion = nn.CrossEntropyLoss()
 EPOCHS = 15
 optimizer = Adam(model.parameters(), lr=0.0003, weight_decay=1e-4)
 scheduler = CosineAnnealingLR(optimizer, T_max=EPOCHS)
+scaler = torch.amp.GradScaler('cuda') # type: ignore
+
 # --------------------------------------------------------------------------------------------
 # Early Stopping Helper Class
 # --------------------------------------------------------------------------------------------
-import copy
 class EarlyStopping:
     def __init__(self, patience=4, min_delta=0.001):
         self.patience = patience
@@ -146,8 +148,9 @@ class EarlyStopping:
             print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
             if self.counter >= self.patience:
                 self.early_stop = True
+
 # --------------------------------------------------------------------------------------------
-# 6. Training & Validation Loop (Optimized for Speed)
+# 6. Training & Validation Loop
 # --------------------------------------------------------------------------------------------
 early_stopping = EarlyStopping(patience=4, min_delta=0.001)
 
@@ -160,29 +163,31 @@ for epoch in range(EPOCHS):
     correct = torch.tensor(0, device=device)
     total = 0
 
-    # mininterval=2.0 updates the terminal at most every 2 seconds
     pbar = tqdm(train_loader, desc=f"Epoch {epoch+1:02d}/{EPOCHS}", mininterval=20.0)
-    #Batch
     for images, labels in pbar:
         images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
 
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
 
-        loss.backward()
-        optimizer.step()
+        # 1. Cast forward pass to float16 using autocast
+        with torch.amp.autocast('cuda'): # type: ignore
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            _, predicted = outputs.max(1)
 
-        # Keep additions on GPU to prevent CPU-GPU synchronization bottlenecks
+        # 2. Backward pass & Optimizer step
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        # 3. Accumulate metrics entirely on GPU
         batch_size = labels.size(0)
         running_loss += loss.detach() * batch_size
-        _, predicted = outputs.max(1)
         total += batch_size
         correct += predicted.eq(labels).sum()
-    #Out Batch
+
     scheduler.step()
     
-    # Move totals to CPU only once per epoch for accuracy calculation(need to update calc./display anyway)
     train_acc = (correct.item() / total) * 100
     epoch_loss = (running_loss.item() / total)
 
@@ -194,46 +199,34 @@ for epoch in range(EPOCHS):
     with torch.no_grad():
         for val_images, val_labels in test_loader:
             val_images, val_labels = val_images.to(device, non_blocking=True), val_labels.to(device, non_blocking=True)
-            val_outputs = model(val_images)
-            
-            # Compute Validation Loss
-            v_loss = criterion(val_outputs, val_labels)
-            val_loss_running += v_loss.detach() * val_labels.size(0)
-            
-            _, val_pred = val_outputs.max(1)
-            val_total += val_labels.size(0)
+           
+            with torch.amp.autocast('cuda'): # type: ignore
+                val_outputs = model(val_images)
+                v_loss = criterion(val_outputs, val_labels)
+                _, val_pred = val_outputs.max(1)
+                
+            batch_size = val_labels.size(0)
+            val_loss_running += v_loss.detach() * batch_size
+            val_total += batch_size
             val_correct += val_pred.eq(val_labels).sum()
 
     val_acc = (val_correct.item() / val_total) * 100
     val_loss = (val_loss_running.item() / val_total)
-    print(f"Epoch {epoch+1:02d}/{EPOCHS} -> Loss: {epoch_loss:.4f} | Train Acc: {train_acc:.2f}% | Val Acc: {val_acc:.2f}%\n")
+    print(f"Epoch {epoch+1:02d}/{EPOCHS} -> Train Loss: {epoch_loss:.4f} | Train Acc: {train_acc:.2f}% | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%\n")
 
     early_stopping(val_loss, model)
     if early_stopping.early_stop:
-        assert early_stopping.best_model_wts is not None
         print(f"\n[Early Stopping Triggered] Stopping early at epoch {epoch+1}.")
-        # Restore best performing model weights before saving
-        model.load_state_dict(early_stopping.best_model_wts)
         break
+
+# Restore best weights once after training ends
+if early_stopping.best_model_wts is not None:
+    model.load_state_dict(early_stopping.best_model_wts)
+    print(f"Loaded best model weights (Best Val Loss: {early_stopping.best_loss:.4f})")
+
 # --------------------------------------------------------------------------------------------
-# 7. Evaluation & Model Saving
+# 7. Checkpoint Saving
 # --------------------------------------------------------------------------------------------
-print("\nEvaluating on Test Set...")
-model.eval()
-test_correct = torch.tensor(0, device=device)
-test_total = 0
-
-with torch.no_grad():
-    for images, labels in test_loader:
-        images, labels = images.to(device), labels.to(device)
-        outputs = model(images)
-        _, predicted = outputs.max(1)
-        test_total += labels.size(0)
-        test_correct += predicted.eq(labels).sum()
-
-test_acc = (test_correct.item() / test_total) * 100
-print(f"Final Test Accuracy: {test_acc:.2f}%")
-
 checkpoint = {
     'model_state': model.state_dict(),
     'class_to_idx': raw_base_dataset.class_to_idx
