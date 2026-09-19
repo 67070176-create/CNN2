@@ -1,6 +1,6 @@
 #import pandas as pd
 import numpy as np
-
+from Net import Net
 #import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, random_split, WeightedRandomSampler, Dataset
 #from sklearn.metrics import accuracy_score
@@ -19,15 +19,20 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # --------------------------------------------------------------------------------------------
 
 train_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.RandomAffine(degrees=(-10, 10), translate=(0.05, 0.05), scale=(0.95, 1.05)),
+    transforms.Resize((64, 64)),
+    transforms.RandomAffine(degrees=5, translate=(0.05, 0.05)),
+    transforms.RandomApply([
+        transforms.GaussianBlur(kernel_size=(3, 3), sigma=(0.1, 1.5))], 
+                           p=0.5),
     transforms.ColorJitter(brightness=0.1, contrast=0.1),
+    transforms.RandomGrayscale(p=0.5),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    transforms.RandomErasing(p=0.25, scale=(0.02, 0.2), value=0)
 ])
 
 test_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((64, 64)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -99,22 +104,21 @@ print(f"Total: {len(raw_base_dataset)} | Train: {len(train_dataset)} | Test: {le
 # --------------------------------------------------------------------------------------------
 # 5. Model Architecture
 # --------------------------------------------------------------------------------------------
-weights = models.ResNet18_Weights.DEFAULT
-model = models.resnet18(weights=weights)
+# weights = models.ResNet18_Weights.DEFAULT
+model = Net(num_classes=NUM_CLASSES).to(device)
 
 # FIXED: Unfreeze weights so model can fine-tune properly on 72 classes
 for param in model.parameters():
     param.requires_grad = True
 
 #Add Drop-out 30% to the model
-num_ftrs = model.fc.in_features
-model.fc = nn.Sequential(  # type: ignore
-    nn.Dropout(p=0.3),
-    nn.Linear(num_ftrs, NUM_CLASSES)
-)
+# num_ftrs = model.fc.in_features
+# model.fc = nn.Sequential(  # type: ignore
+#     nn.Dropout(p=0.3),
+#     nn.Linear(num_ftrs, NUM_CLASSES)
+# )
 model = model.to(device)
-
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 # Reduced learning rate to 1e-4 for transfer learning
 EPOCHS = 15
 optimizer = Adam(model.parameters(), lr=0.0003, weight_decay=1e-4)

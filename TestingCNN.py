@@ -3,6 +3,7 @@ import torch.nn as nn
 from torchvision import transforms, models
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader, random_split, Dataset
+from Net import Net
 
 # 1. Setup device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -26,7 +27,7 @@ class TransformedSubset(Dataset):
 # 3. Load dataset & set transforms
 SEED = 42
 test_transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((64, 64)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -45,15 +46,16 @@ test_dataset = TransformedSubset(raw_test_subset, transform=test_transform)
 test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
 # 4. Load the model architecture
-model = models.resnet18()
-num_ftrs = model.fc.in_features
+# model = models.resnet18()
+# num_ftrs = model.fc.in_features
+model = Net(num_classes=72).to(device)
 num_classes = 72
 
 # Update Dropout to 0.5 to match Training script
-model.fc = nn.Sequential( # type: ignore
-    nn.Dropout(p=0.5),
-    nn.Linear(num_ftrs, num_classes)
-)
+# model.fc = nn.Sequential( # type: ignore
+#     nn.Dropout(p=0.5),
+#     nn.Linear(num_ftrs, num_classes)
+# )
 
 # 5. Load dictionary checkpoint correctly
 checkpoint = torch.load('model.pt', map_location=device, weights_only=True)
