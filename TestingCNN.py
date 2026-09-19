@@ -49,9 +49,9 @@ model = models.resnet18()
 num_ftrs = model.fc.in_features
 num_classes = 72
 
-# Update Dropout to 0.5 to match Training script
+# Update Dropout to 0.3 to match Training script
 model.fc = nn.Sequential( # type: ignore
-    nn.Dropout(p=0.5),
+    nn.Dropout(p=0.3),
     nn.Linear(num_ftrs, num_classes)
 )
 
