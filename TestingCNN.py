@@ -31,17 +31,10 @@ test_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-# Load raw dataset without transforms
-raw_base_dataset = ImageFolder(root='archive/synthetic_test_set')  # Ensure this points to your dataset path
+# Load the dedicated test dataset directly without splitting it again
+raw_test_dataset = ImageFolder(root='archive/synthetic_test_set')
 
-train_size = int(0.8 * len(raw_base_dataset))
-test_size = len(raw_base_dataset) - train_size
-
-generator = torch.Generator().manual_seed(SEED)
-_, raw_test_subset = random_split(raw_base_dataset, [train_size, test_size], generator=generator)
-
-# Wrap test subset
-test_dataset = TransformedSubset(raw_test_subset, transform=test_transform)
+test_dataset = TransformedSubset(raw_test_dataset, transform=test_transform)
 test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
 # 4. Load the model architecture
