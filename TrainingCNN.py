@@ -17,13 +17,59 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 # --------------------------------------------------------------------------------------------
 # 1. Transforms
 # --------------------------------------------------------------------------------------------
+import random
+from PIL import Image
+import cv2
+import numpy as np
+#ero/dialation
+class RandomStrokeThickness:
+    """Randomly dilate or erode PIL image strokes to simulate thin or bold characters."""
+    def __init__(self, p=0.4):
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() > self.p:
+            return img
+
+        # Convert PIL to OpenCV Numpy Array
+        img_np = np.array(img)
+        
+        # Pick kernel size (1x1 to 3x3 for fine adjustment)
+        kernel_size = random.choice([2, 3])
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        
+        # Randomly decide to thicken or thin out strokes
+        operation = random.choice(['thicken', 'thin'])
+        
+        if operation == 'thicken':
+            # For dark strokes on white background, erode expands the dark region
+            img_np = cv2.erode(img_np, kernel, iterations=1)
+        else:
+            # Dilation shrinks dark regions, making strokes thinner
+            img_np = cv2.dilate(img_np, kernel, iterations=1)
+
+        return Image.fromarray(img_np)
 
 train_transform = transforms.Compose([
     transforms.Resize((224, 224)),
-    transforms.RandomAffine(degrees=(-10, 10), translate=(0.05, 0.05), scale=(0.95, 1.05)),
-    transforms.ColorJitter(brightness=0.1, contrast=0.1),
+    #thin/bold char with ero/dialation
+    RandomStrokeThickness(p=0.4),
+    transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+    transforms.RandomRotation(degrees=(-25, 25)),
+    transforms.ColorJitter(
+        brightness=0.2, 
+        contrast=0.2, 
+        saturation=0.1
+    ),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    #rand erasing
+    transforms.RandomErasing(
+        p=0.25, 
+        scale=(0.02, 0.1), 
+        ratio=(0.3, 3.3), 
+        value=0
+    ),
 ])
 
 test_transform = transforms.Compose([
