@@ -8,6 +8,8 @@ data augmentation
 - size/scale
 - light change(little)
 - normalize to standard of rasnet input
+- erotion/dialation จำลองตัวบาง/หนา
+- randomErasing สุ่มลบส่วนภาพ
 
 hightlight i think is
 1. class balance by add weight each class
@@ -52,6 +54,8 @@ hightlight i think is
 - size/scale
 - light change(little)
 - normalize to standard of rasnet input
+- erotion/dialation จำลองตัวบาง/หนา
+- randomErasing สุ่มลบส่วนภาพ
 #### มีการอธิบายถึงเทคนิคหรือแนวคิดที่น่าสนใจ
 1. class balance by add weight each class
 2. doup_out 30%
@@ -60,6 +64,7 @@ hightlight i think is
 5. save data in train loop using torch so it doing on GPU instead of CPU(lower time lag at communicate) EX.running_loss ,correct
 6. calc. val_loss in train loop to see overfit and early stop and save best model
 7. have checkpoint to save both model and index(in case test data sort differently)
+8. erotion/dialation จำลองตัวบาง/หนา
 #### มีการอธิบายถึงการทำงานของ CNN โดยเน้นที่จุดเด่นของสถาปัตยกรรม 
 - use 3x3 conv to increase channel to finetune detail(64>128>256>512)
   - each layer conv 3 timed
