@@ -9,15 +9,20 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 from tqdm import tqdm
 
-# --------------------------------------------------------------------------------------------
-# 1. Device Setup & Config
-# --------------------------------------------------------------------------------------------
+# 1. Device Setup & Paths
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 NUM_CLASSES = 72
 
-# --------------------------------------------------------------------------------------------
-# 2. Custom Dataset for CSV-based Inference
-# --------------------------------------------------------------------------------------------
+TRAIN_DIR = "E:/move work/year3/deeplearn/CNN/dataset/round2"
+CSV_PATH = "E:/move work/year3/deeplearn/CNN/archive2/test/test.csv"
+IMG_DIR = "E:/move work/year3/deeplearn/CNN/archive2/test"
+OUTPUT_PATH = "E:/move work/year3/deeplearn/CNN/out2.csv"
+
+# 2. Build Class Map (Handles gaps in folder numbers automatically)
+class_folders = sorted([f for f in os.listdir(TRAIN_DIR) if os.path.isdir(os.path.join(TRAIN_DIR, f))])
+idx_to_class = {idx: int(folder_name) for idx, folder_name in enumerate(class_folders)}
+
+# 3. Custom Dataset
 class TestCSVDataset(Dataset):
     def __init__(self, csv_file, img_dir, transform=None):
         self.df = pd.read_csv(csv_file)
@@ -30,39 +35,36 @@ class TestCSVDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         
-        # Build image filename (appends .png if missing)
-        img_id = str(row['id'])
+        img_id = str(row['id']).strip()
         if not img_id.endswith('.png'):
             img_id = f"{img_id}.png"
             
-        img_path = os.path.join(self.img_dir, img_id)
+        # Clean filename to prevent path resolution errors
+        img_filename = os.path.basename(img_id)
+        img_path = os.path.join(self.img_dir, img_filename)
 
-        # Force 3-channel RGB (compatible with ResNet)
         image = Image.open(img_path).convert('RGB')
 
         if self.transform:
             image = self.transform(image)
 
-        return image
+        # Extract Ground Truth Label from prefix (e.g. "161_1.png" -> 161)
+        filename_without_ext = os.path.splitext(img_filename)[0]
+        ground_truth_label = int(filename_without_ext.rsplit('_', 1)[0])
 
+        return image, ground_truth_label
 
-# --------------------------------------------------------------------------------------------
-# 3. Test Transforms (Matches ResNet Requirements)
-# --------------------------------------------------------------------------------------------
+# 4. Transforms
 test_transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-
-# --------------------------------------------------------------------------------------------
-# 4. Load Saved Checkpoint & Reconstruct Model
-# --------------------------------------------------------------------------------------------
+# 5. Load Checkpoint
 print("Loading model checkpoint...")
 checkpoint = torch.load('model.pt', map_location=device, weights_only=True)
 
-# Instantiate ResNet18 architecture
 model = models.resnet18()
 num_ftrs = model.fc.in_features
 model.fc = nn.Sequential(
@@ -70,59 +72,52 @@ model.fc = nn.Sequential(
     nn.Linear(num_ftrs, NUM_CLASSES)
 )
 
-# Load saved weights (handles both wrapped state dict and direct dict)
 if isinstance(checkpoint, dict) and 'model_state' in checkpoint:
     model.load_state_dict(checkpoint['model_state'])
-    class_to_idx = checkpoint.get('class_to_idx', None)
 else:
     model.load_state_dict(checkpoint)
-    class_to_idx = None
 
 model = model.to(device)
 model.eval()
 
-
-# --------------------------------------------------------------------------------------------
-# 5. Data Loader Initialization
-# --------------------------------------------------------------------------------------------
-CSV_PATH = "E:/move work/year3/deeplearn/CNN/archive2/test/test.csv"
-IMG_DIR = 'E:/move work/year3/deeplearn/CNN/archive2/test'
-
-test_dataset = TestCSVDataset(
-    csv_file=CSV_PATH,
-    img_dir=IMG_DIR,
-    transform=test_transform
-)
-
+# 6. DataLoader & Inference
+test_dataset = TestCSVDataset(csv_file=CSV_PATH, img_dir=IMG_DIR, transform=test_transform)
 test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-
-# --------------------------------------------------------------------------------------------
-# 6. Inference Loop & CSV Export
-# --------------------------------------------------------------------------------------------
 all_preds = []
+all_targets = []
 
-print("Generating predictions...")
+print("Generating predictions and computing accuracy...")
 with torch.no_grad():
-    for images in tqdm(test_loader, desc="Predicting"):
+    for images, targets in tqdm(test_loader, desc="Testing"):
         images = images.to(device)
         
-        with torch.cuda.amp.autocast(enabled=(device.type == 'cuda')):
+        with torch.amp.autocast('cuda', enabled=(device.type == 'cuda')):
             outputs = model(images)
             
         probs = F.softmax(outputs, dim=1)
         preds = torch.argmax(probs, dim=1).cpu().numpy()
+        
         all_preds.extend(preds)
+        all_targets.extend(targets.numpy())
 
-# Map integer prediction back to original class string label if mapped during training
-# if class_to_idx is not None:
-#     idx_to_class = {v: k for k, v in class_to_idx.items()}
-#     all_preds = [idx_to_class[p] for p in all_preds]
-final_labels = [p + 161 for p in all_preds]
+# Map predictions to true labels
+final_labels = [idx_to_class[p] for p in all_preds]
 
-# Save output to C:/out.csv
+# Calculate Accuracy
+correct_count = sum(p == t for p, t in zip(final_labels, all_targets))
+total_count = len(all_targets)
+acc_percentage = (correct_count / total_count) * 100
+
+print("\n" + "=" * 45)
+print(f"Total Samples    : {total_count}")
+print(f"Correct Count    : {correct_count}")
+print(f"Overall Accuracy : {acc_percentage:.2f}%")
+print("=" * 45 + "\n")
+
 outXls = pd.read_csv(CSV_PATH)
-outXls['label'] = final_labels
-outXls.to_csv('E:/move work/year3/deeplearn/CNN/out2.csv', index=False)
+outXls['predicted_label'] = final_labels
+outXls['ground_truth'] = all_targets
+outXls.to_csv(OUTPUT_PATH, index=False)
 
-print("Finished! Predictions successfully saved to E:/move work/year3/deeplearn/CNN/out.csv")
+print(f"Finished! Output written to: {OUTPUT_PATH}")
