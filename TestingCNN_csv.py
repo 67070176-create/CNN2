@@ -85,8 +85,8 @@ model.eval()
 # --------------------------------------------------------------------------------------------
 # 5. Data Loader Initialization
 # --------------------------------------------------------------------------------------------
-CSV_PATH = 'C:/test/test.csv'
-IMG_DIR = 'C:/test/'
+CSV_PATH = "E:/move work/year3/deeplearn/CNN/archive2/test/test.csv"
+IMG_DIR = 'E:/move work/year3/deeplearn/CNN/archive2/test'
 
 test_dataset = TestCSVDataset(
     csv_file=CSV_PATH,
@@ -118,11 +118,11 @@ with torch.no_grad():
 # if class_to_idx is not None:
 #     idx_to_class = {v: k for k, v in class_to_idx.items()}
 #     all_preds = [idx_to_class[p] for p in all_preds]
-final_labels = [p + 1 for p in all_preds]
+final_labels = [p + 161 for p in all_preds]
 
 # Save output to C:/out.csv
 outXls = pd.read_csv(CSV_PATH)
 outXls['label'] = final_labels
-outXls.to_csv('C:/out.csv', index=False)
+outXls.to_csv('E:/move work/year3/deeplearn/CNN/out2.csv', index=False)
 
-print("Finished! Predictions successfully saved to C:/out.csv")
+print("Finished! Predictions successfully saved to E:/move work/year3/deeplearn/CNN/out.csv")
