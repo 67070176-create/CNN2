@@ -18,9 +18,9 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using Device: {device}")
 NUM_CLASSES = 72
 
-CSV_PATH = "E:/move work/year3/deeplearn/CNN/test_dataset/test.csv"
+CSV_PATH = "E:/move work/year3/deeplearn/CNN/test_dataset/answer_key.csv"
 IMG_DIR = "E:/move work/year3/deeplearn/CNN/test_dataset"
-OUTPUT_PATH = "E:/move work/year3/deeplearn/CNN/out.csv"
+OUTPUT_PATH = "E:/move work/year3/deeplearn/CNN/out2.csv"
 
 
 # --------------------------------------------------------------------------------------------
