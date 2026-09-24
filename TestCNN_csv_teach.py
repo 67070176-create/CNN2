@@ -20,7 +20,7 @@ NUM_CLASSES = 72
 
 CSV_PATH = "E:/move work/year3/deeplearn/CNN/test_dataset/answer_key.csv"
 IMG_DIR = "E:/move work/year3/deeplearn/CNN/test_dataset"
-OUTPUT_PATH = "E:/move work/year3/deeplearn/CNN/out2.csv"
+OUTPUT_PATH = "E:/move work/year3/deeplearn/CNN/out.csv"
 
 
 # --------------------------------------------------------------------------------------------
